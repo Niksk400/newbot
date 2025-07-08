@@ -2,26 +2,30 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
+from sentence_transformers import SentenceTransformer
 from transformers import pipeline
 
 st.set_page_config(page_title="PDF Q&A Chatbot", page_icon="📄")
 
+# Cache model loading
 @st.cache_resource
 def load_bot(pdf_path):
+    # Load and split PDF
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
-
     splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     documents = splitter.split_documents(docs)
 
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vector_db = FAISS.from_documents(documents, embeddings)
+    # Embed with sentence-transformers
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    texts = [doc.page_content for doc in documents]
+    embeddings = model.encode(texts)
+    vector_db = FAISS.from_texts(texts, embedding=model.encode)
 
-    qa_pipe = pipeline("text2text-generation", model="google/flan-t5-base")
-    llm = HuggingFacePipeline(pipeline=qa_pipe)
+    # QA pipeline with Transformers
+    qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-base")
 
-    return vector_db.as_retriever(), llm
+    return vector_db.as_retriever(), qa_pipeline
 
 st.title("📄 PDF AI Chatbot (Offline, Free)")
 
@@ -31,14 +35,14 @@ question = st.text_input("Ask a question:")
 if uploaded_file:
     with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.read())
-    retriever, llm = load_bot("temp.pdf")
-    st.success("PDF Loaded!")
+    retriever, qa_pipeline = load_bot("temp.pdf")
+    st.success("✅ PDF Loaded")
 
-    if st.button("Ask") and question:
+    if question and st.button("Ask"):
         with st.spinner("Thinking..."):
             docs = retriever.get_relevant_documents(question)
             context = "\n".join([doc.page_content for doc in docs])
 
             prompt = f"Answer the question based on the context:\n{context}\n\nQuestion: {question}\nAnswer:"
-            result = llm.invoke(prompt)
+            result = qa_pipeline(prompt, max_length=200, do_sample=False)[0]['generated_text']
             st.write(result)
