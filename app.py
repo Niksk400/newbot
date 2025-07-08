@@ -3,38 +3,47 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from sentence_transformers import SentenceTransformer
+from langchain.embeddings import HuggingFaceEmbeddings
 from transformers import pipeline
+from langchain.llms import HuggingFacePipeline
 
-# 📌 Custom wrapper to use SentenceTransformer with LangChain
-class SentenceTransformerEmbeddings:
-    def __init__(self, model_name="all-MiniLM-L6-v2"):
-        self.model = SentenceTransformer(model_name)
+st.set_page_config(page_title="PDF Q&A Chatbot", page_icon="📄")
 
-    def embed_documents(self, texts):
-        return self.model.encode(texts).tolist()
-
-    def embed_query(self, text):
-        return self.model.encode([text])[0].tolist()
-
-# ✅ Load PDF, split, embed and return retriever + LLM
 @st.cache_resource
 def load_bot(pdf_path):
+    # Load and split PDF
     loader = PyPDFLoader(pdf_path)
     docs = loader.load()
 
     splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     documents = splitter.split_documents(docs)
 
-    embeddings = SentenceTransformerEmbeddings()
+    # Use SentenceTransformer locally for embeddings
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vector_db = FAISS.from_documents(documents, embeddings)
 
-    qa_pipeline = pipeline("text2text-generation", model="google/flan-t5-base")
+    # Load FLAN-T5 for local inference
+    pipe = pipeline("text2text-generation", model="google/flan-t5-base")
+    llm = HuggingFacePipeline(pipeline=pipe)
 
-    return vector_db.as_retriever(), qa_pipeline
+    return vector_db.as_retriever(), llm
 
-# 🎯 Streamlit UI
-st.set_page_config(page_title="📄 PDF Q&A Chatbot", page_icon="🤖")
-st.title("📄 PDF Q&A Chatbot (Offline, No OpenAI)")
+st.title("📄 PDF Q&A Chatbot (Offline, Free)")
 
-uploaded_file = st.file_up
+uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
+question = st.text_input("Ask a question:")
 
+if uploaded_file:
+    with open("temp.pdf", "wb") as f:
+        f.write(uploaded_file.read())
+    retriever, llm = load_bot("temp.pdf")
+    st.success("✅ PDF Loaded!")
+
+    if st.button("Ask") and question:
+        with st.spinner("🤖 Thinking..."):
+            docs = retriever.get_relevant_documents(question)
+            context = "\n".join([doc.page_content for doc in docs])
+
+            prompt = f"Answer the question based on the context:\n{context}\n\nQuestion: {question}\nAnswer:"
+            result = llm.invoke(prompt)
+            st.write("📝 " + result)
